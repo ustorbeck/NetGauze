@@ -38,6 +38,8 @@ fn test_simple() -> Result<(), UdpNotifPacketWritingError> {
             1,
             false,
             MediaType::YangDataJson,
+            12,
+            14,
             0x01000001,
             0x02000002,
             HashMap::new(),

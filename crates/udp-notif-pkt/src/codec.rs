@@ -15,11 +15,11 @@
 
 use crate::{
     wire::deserialize::{LocatedUdpNotifHeaderParsingError, UdpNotifHeaderParsingError},
-    UdpNotifHeader, UdpNotifOption, UdpNotifOptionCode, UdpNotifPacket,
+    UdpNotifHeader, UdpNotifMsg, UdpNotifOption, UdpNotifOptionCode, UdpNotifPacket,
 };
 use byteorder::{ByteOrder, NetworkEndian};
-use bytes::{Buf, BytesMut};
-use netgauze_parse_utils::{LocatedParsingError, ReadablePdu, Span};
+use bytes::{Buf, BufMut, BytesMut};
+use netgauze_parse_utils::{LocatedParsingError, ReadablePdu, Span, WritablePdu};
 use nom::error::ErrorKind;
 use serde::{Deserialize, Serialize};
 use std::{
@@ -27,7 +27,7 @@ use std::{
     io,
     time::{Duration, Instant},
 };
-use tokio_util::codec::Decoder;
+use tokio_util::codec::{Decoder, Encoder};
 
 #[derive(Debug, strum_macros::Display, Eq, PartialEq, Clone, Serialize, Deserialize)]
 pub enum ReassemblyBufferError {
@@ -38,6 +38,7 @@ pub enum ReassemblyBufferError {
 
 impl std::error::Error for ReassemblyBufferError {}
 
+#[derive(Debug)]
 struct ReassemblyBuffer {
     timestamp: Instant,
     has_last: bool,
@@ -63,7 +64,7 @@ impl ReassemblyBuffer {
         self.has_last && self.segments.len() == self.expected_count as usize
     }
 
-    fn reassemble(mut self) -> Result<UdpNotifPacket, ReassemblyBufferError> {
+    fn reassemble(mut self) -> Result<UdpNotifMsg, ReassemblyBufferError> {
         if !self.has_last {
             return Err(ReassemblyBufferError::LastSegmentIsNotReceived);
         }
@@ -94,16 +95,11 @@ impl ReassemblyBuffer {
                 }
                 assembled_payload.unsplit(BytesMut::from(payload))
             });
-        let final_header = UdpNotifHeader::new(
-            first_segment.header.version,
+        Ok(UdpNotifMsg::new(
             first_segment.header.s_flag,
             first_segment.header.media_type,
             first_segment.header.publisher_id,
             first_segment.header.message_id,
-            options,
-        );
-        Ok(UdpNotifPacket::new(
-            final_header,
             assembled_payload.freeze(),
         ))
     }
@@ -121,7 +117,7 @@ impl Default for ReassemblyBuffer {
 }
 
 #[derive(Debug, strum_macros::Display, Eq, PartialEq, Clone, Serialize, Deserialize)]
-pub enum UdpPacketCodecError {
+pub enum UdpNotifCodecError {
     IoError(String),
     InvalidHeaderLength(u8),
     InvalidMessageLength(u16),
@@ -129,7 +125,7 @@ pub enum UdpPacketCodecError {
     ReassemblyError(ReassemblyBufferError),
 }
 
-impl<'a> From<nom::Err<LocatedUdpNotifHeaderParsingError<'a>>> for UdpPacketCodecError {
+impl<'a> From<nom::Err<LocatedUdpNotifHeaderParsingError<'a>>> for UdpNotifCodecError {
     fn from(err: nom::Err<LocatedUdpNotifHeaderParsingError<'a>>) -> Self {
         match err {
             nom::Err::Incomplete(_) => {
@@ -142,27 +138,27 @@ impl<'a> From<nom::Err<LocatedUdpNotifHeaderParsingError<'a>>> for UdpPacketCode
     }
 }
 
-impl From<ReassemblyBufferError> for UdpPacketCodecError {
+impl From<ReassemblyBufferError> for UdpNotifCodecError {
     fn from(value: ReassemblyBufferError) -> Self {
         Self::ReassemblyError(value)
     }
 }
 
-impl std::error::Error for UdpPacketCodecError {}
+impl std::error::Error for UdpNotifCodecError {}
 
-impl From<io::Error> for UdpPacketCodecError {
+impl From<io::Error> for UdpNotifCodecError {
     fn from(err: io::Error) -> Self {
         Self::IoError(err.to_string())
     }
 }
 
-#[derive(Default)]
-pub struct UdpPacketCodec {
+#[derive(Debug, Default)]
+pub struct UdpNotifCodec {
     in_message: bool,
     incomplete_messages: HashMap<(u32, u32), ReassemblyBuffer>,
 }
 
-impl UdpPacketCodec {
+impl UdpNotifCodec {
     pub fn cleanup_timed_out_messages(&mut self, duration: Duration) {
         self.incomplete_messages
             .retain(|_, buf| !buf.is_timed_out(duration));
@@ -174,7 +170,7 @@ impl UdpPacketCodec {
     }
 
     #[inline]
-    fn check_len(&mut self, buf: &BytesMut) -> Result<Option<(u8, u16)>, UdpPacketCodecError> {
+    fn check_len(&mut self, buf: &BytesMut) -> Result<Option<(u8, u16)>, UdpNotifCodecError> {
         let min_header_length = 12;
         if !self.in_message && buf.len() < min_header_length as usize {
             // Not enough data yet to read even the header
@@ -182,7 +178,7 @@ impl UdpPacketCodec {
         }
         let header_len = buf[1];
         if header_len < min_header_length {
-            return Err(UdpPacketCodecError::InvalidHeaderLength(header_len));
+            return Err(UdpNotifCodecError::InvalidHeaderLength(header_len));
         }
         if buf.len() < header_len as usize {
             // Not enough data to read the header yet
@@ -191,7 +187,7 @@ impl UdpPacketCodec {
         }
         let message_length = NetworkEndian::read_u16(&buf[2..4]);
         if message_length < header_len as u16 {
-            return Err(UdpPacketCodecError::InvalidMessageLength(message_length));
+            return Err(UdpNotifCodecError::InvalidMessageLength(message_length));
         }
         if buf.len() < message_length as usize {
             // Not enough data to read the full message yet
@@ -221,12 +217,18 @@ impl UdpPacketCodec {
         &mut self,
         header: UdpNotifHeader,
         payload: BytesMut,
-    ) -> Result<Option<UdpNotifPacket>, UdpPacketCodecError> {
+    ) -> Result<Option<UdpNotifMsg>, UdpNotifCodecError> {
         let (seg_no, is_last) = Self::extract_segment_info(&header);
 
         // Short-circuit for unsegmented or single-segment messages
         if seg_no == 0 && is_last {
-            return Ok(Some(UdpNotifPacket::new(header, payload.freeze())));
+            return Ok(Some(UdpNotifMsg::new(
+                header.s_flag,
+                header.media_type,
+                header.publisher_id,
+                header.message_id,
+                payload.freeze(),
+            )));
         }
 
         let message_key = (header.publisher_id(), header.message_id());
@@ -245,9 +247,32 @@ impl UdpPacketCodec {
     }
 }
 
-impl Decoder for UdpPacketCodec {
-    type Item = UdpNotifPacket;
-    type Error = UdpPacketCodecError;
+impl Encoder<UdpNotifMsg> for UdpNotifCodec {
+    type Error = UdpNotifCodecError;
+
+    fn encode(&mut self, msg: UdpNotifMsg, dst: &mut BytesMut) -> Result<(), Self::Error> {
+        // TODO: handle segmentation
+        let header = UdpNotifHeader::new(
+            1,
+            msg.s_flag,
+            msg.media_type,
+            12,
+            12 + msg.payload.len() as u16,
+            msg.publisher_id,
+            msg.message_id,
+            HashMap::new(),
+        );
+        let pkt = UdpNotifPacket::new(header, msg.payload);
+        let mut writer = dst.writer();
+        pkt.write(&mut writer)
+            .expect("Failed to write UDP notification message"); // FIXME: use error codes
+        Ok(())
+    }
+}
+
+impl Decoder for UdpNotifCodec {
+    type Item = UdpNotifMsg;
+    type Error = UdpNotifCodecError;
 
     #[inline]
     fn decode(&mut self, buf: &mut BytesMut) -> Result<Option<Self::Item>, Self::Error> {
@@ -275,7 +300,7 @@ mod tests {
     use bytes::Bytes;
     #[test]
     fn test_decode() {
-        let mut codec = UdpPacketCodec::default();
+        let mut codec = UdpNotifCodec::default();
         let value: Vec<u8> = vec![
             0x21, // version 1, no private space, Media type: 1 = YANG data JSON
             0x0c, // Header length
@@ -289,15 +314,11 @@ mod tests {
         let value = codec.decode(&mut buf);
         assert_eq!(
             value,
-            Ok(Some(UdpNotifPacket::new(
-                UdpNotifHeader::new(
-                    1,
-                    false,
-                    MediaType::YangDataJson,
-                    0x01000001,
-                    0x02000002,
-                    HashMap::new()
-                ),
+            Ok(Some(UdpNotifMsg::new(
+                false,
+                MediaType::YangDataJson,
+                0x01000001,
+                0x02000002,
                 Bytes::from(&[0xff, 0xff][..]),
             )))
         )
@@ -305,7 +326,7 @@ mod tests {
 
     #[test]
     fn test_decode_segmented() {
-        let mut codec = UdpPacketCodec::default();
+        let mut codec = UdpNotifCodec::default();
         let value: Vec<u8> = vec![
             0x21, // version 1, no private space, Media type: 1 = YANG data JSON
             0x10, // Header length
@@ -332,15 +353,11 @@ mod tests {
         assert!(matches!(value1, Ok(None)));
         assert_eq!(
             value2,
-            Ok(Some(UdpNotifPacket::new(
-                UdpNotifHeader::new(
-                    1,
-                    false,
-                    MediaType::YangDataJson,
-                    0x01000001,
-                    0x02000002,
-                    HashMap::new(),
-                ),
+            Ok(Some(UdpNotifMsg::new(
+                false,
+                MediaType::YangDataJson,
+                0x01000001,
+                0x02000002,
                 Bytes::from(
                     &[
                         0xff, 0xff, 0xff, 0xff, // payload from first segment

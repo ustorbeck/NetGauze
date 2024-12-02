@@ -89,21 +89,21 @@ impl<'a> ReadablePdu<'a, LocatedUdpNotifHeaderParsingError<'a>> for UdpNotifHead
         }
         let s_flag = (first_octet & 0b00010000) != 0;
         let media_type = (first_octet & 0b00001111).into();
-        let (buf, header_len) = nom::number::complete::u8(buf)?;
-        if header_len < 2 {
+        let (buf, header_length) = nom::number::complete::u8(buf)?;
+        if header_length < 2 {
             return Err(nom::Err::Error(LocatedUdpNotifHeaderParsingError::new(
                 input,
-                UdpNotifHeaderParsingError::InvalidHeaderLength(header_len),
+                UdpNotifHeaderParsingError::InvalidHeaderLength(header_length),
             )));
         }
-        if buf.len() < (header_len - 2) as usize {
+        if buf.len() < (header_length - 2) as usize {
             return Err(nom::Err::Error(LocatedUdpNotifHeaderParsingError::new(
                 input,
-                UdpNotifHeaderParsingError::InvalidHeaderLength(header_len),
+                UdpNotifHeaderParsingError::InvalidHeaderLength(header_length),
             )));
         }
-        let (buf, header_buf) = nom::bytes::complete::take(header_len - 2)(buf)?;
-        let (header_buf, _message_length) = be_u16(header_buf)?;
+        let (buf, header_buf) = nom::bytes::complete::take(header_length - 2)(buf)?;
+        let (header_buf, message_length) = be_u16(header_buf)?;
         let (header_buf, publisher_id) = be_u32(header_buf)?;
         let (mut header_buf, message_id) = be_u32(header_buf)?;
         let mut options = HashMap::new();
@@ -123,6 +123,8 @@ impl<'a> ReadablePdu<'a, LocatedUdpNotifHeaderParsingError<'a>> for UdpNotifHead
                 version,
                 s_flag,
                 media_type,
+                header_length,
+                message_length,
                 publisher_id,
                 message_id,
                 options,

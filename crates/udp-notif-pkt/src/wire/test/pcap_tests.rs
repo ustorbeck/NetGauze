@@ -13,7 +13,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::{codec::UdpPacketCodec, MediaType};
+use crate::{codec::UdpNotifCodec, MediaType};
 use bytes::{Buf, BytesMut};
 use netgauze_pcap_reader::{PcapIter, TransportProtocol};
 use pcap_parser::LegacyPcapReader;
@@ -91,7 +91,7 @@ fn test_udp_notif_pcap(overwrite: bool, pcap_path: PathBuf) {
         let key = (src_ip, src_port, dst_ip, dst_port);
         let (codec, buf) = peers
             .entry(key)
-            .or_insert((UdpPacketCodec::default(), BytesMut::new()));
+            .or_insert((UdpNotifCodec::default(), BytesMut::new()));
         buf.extend_from_slice(&value);
         while buf.has_remaining() {
             let serialized = match codec.decode(buf) {
@@ -99,16 +99,16 @@ fn test_udp_notif_pcap(overwrite: bool, pcap_path: PathBuf) {
                     let mut value = serde_json::to_value(&msg)
                         .expect("Couldn't serialize UDP-Notif message to json");
                     // Convert when possible inner payload into human-readable format
-                    match msg.header.media_type {
+                    match msg.media_type {
                         MediaType::YangDataJson => {
-                            let payload = serde_json::from_slice(msg.payload())
+                            let payload = serde_json::from_slice(&msg.payload)
                                 .expect("Couldn't deserialize JSON payload into a JSON object");
                             if let Value::Object(ref mut val) = &mut value {
                                 val.insert("payload".to_string(), payload);
                             }
                         }
                         MediaType::YangDataXml => {
-                            let payload = std::str::from_utf8(msg.payload())
+                            let payload = std::str::from_utf8(&msg.payload)
                                 .expect("Couldn't deserialize XML payload into an UTF-8 string");
                             if let Value::Object(ref mut val) = &mut value {
                                 val.insert(

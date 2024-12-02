@@ -62,16 +62,21 @@ pub struct UdpNotifHeader {
     version: u8,
     s_flag: bool,
     media_type: MediaType,
+    header_length: u8,
+    message_length: u16,
     publisher_id: u32,
     message_id: u32,
     options: HashMap<UdpNotifOptionCode, UdpNotifOption>,
 }
 
 impl UdpNotifHeader {
+    // TODO: calculate header length internally?
     pub const fn new(
         version: u8,
         s_flag: bool,
         media_type: MediaType,
+        header_length: u8,
+        message_length: u16,
         publisher_id: u32,
         message_id: u32,
         options: HashMap<UdpNotifOptionCode, UdpNotifOption>,
@@ -80,6 +85,8 @@ impl UdpNotifHeader {
             version,
             s_flag,
             media_type,
+            header_length,
+            message_length,
             publisher_id,
             message_id,
             options,
@@ -165,5 +172,33 @@ impl UdpNotifPacket {
 
     pub const fn payload(&self) -> &Bytes {
         &self.payload
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Eq, PartialEq)]
+pub struct UdpNotifMsg {
+    // TODO: add option handling
+    s_flag: bool,
+    media_type: MediaType,
+    publisher_id: u32,
+    message_id: u32,
+    payload: Bytes,
+}
+
+impl UdpNotifMsg {
+    pub const fn new(
+        s_flag: bool,
+        media_type: MediaType,
+        publisher_id: u32,
+        message_id: u32,
+        payload: Bytes,
+    ) -> Self {
+        Self {
+            s_flag,
+            media_type,
+            publisher_id,
+            message_id,
+            payload,
+        }
     }
 }
