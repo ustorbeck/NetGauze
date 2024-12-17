@@ -38,6 +38,7 @@ pub enum ReassemblyBufferError {
 
 impl std::error::Error for ReassemblyBufferError {}
 
+#[derive(Debug)]
 struct ReassemblyBuffer {
     timestamp: Instant,
     has_last: bool,
@@ -156,7 +157,7 @@ impl From<io::Error> for UdpPacketCodecError {
     }
 }
 
-#[derive(Default)]
+#[derive(Debug, Default)]
 pub struct UdpPacketCodec {
     in_message: bool,
     incomplete_messages: HashMap<(u32, u32), ReassemblyBuffer>,
