@@ -146,6 +146,7 @@ jobs:
       - name: cargo llvm-cov
         run: cargo llvm-cov --locked --all-features --lcov --output-path lcov.info
       - name: Upload to codecov.io
+        if: secrets.CODECOV_TOKEN # skip the step when no CODECOV_TOKEN is set
         uses: codecov/codecov-action@v5
         with:
           fail_ci_if_error: true
