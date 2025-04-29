@@ -35,6 +35,7 @@ pub enum UdpNotifPayload {
 /// Cache for YangPush subscriptions metadata
 pub type SubscriptionsCache = HashMap<SubscriptionId, SubscriptionInformation>;
 
+// TODO: simplify cache since we only need the subscription metadata!
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SubscriptionInformation {
     pub encoding: NotificationEncoding,

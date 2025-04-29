@@ -13,6 +13,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+// TODO: derive Eq everywhere also...
+
 // TODO: documentation here..
 /// Ref: https://datatracker.ietf.org/doc/html/draft-netana-nmop-message-broker-telemetry-message-00
 use serde::{Deserialize, Serialize};
@@ -189,33 +191,52 @@ pub struct YangPushFilters {
     pub extra_filters: Value,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
-#[serde(untagged)]
-pub enum StreamFilter {
-    ByReference {
-        #[serde(rename = "stream-filter-name")]
-        stream_filter_name: String,
-    },
-    WithinSubscription {
-        #[serde(flatten)]
-        filter_spec: Option<StreamFilterSpec>,
-    },
+#[derive(Default, Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "kebab-case")]
+pub struct StreamFilter {
+    pub name: String,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stream_xpath_filter: Option<String>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stream_subtree_filter: Option<Value>,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
-#[serde(untagged)]
-pub enum StreamFilterSpec {
-    StreamXpathFilter {
-        #[serde(rename = "stream-xpath-filter")]
-        #[serde(skip_serializing_if = "Option::is_none")]
-        stream_xpath_filter: Option<String>,
-    },
-    StreamSubtreeFilter {
-        #[serde(rename = "stream-subtree-filter")]
-        #[serde(skip_serializing_if = "Option::is_none")]
-        stream_subtree_filter: Option<Value>,
-    },
-}
+// |  +--ro stream-filter* [name]
+// |     +--ro name                           string
+// |     +--ro (filter-spec)?
+// |        +--:(stream-subtree-filter)
+// |        |  +--ro stream-subtree-filter?   <anydata>
+// |        |          {subtree}?
+// |        +--:(stream-xpath-filter)
+// |           +--ro stream-xpath-filter?     yang:xpath1.0
+
+// rustfmt::skip
+// #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+// pub struct StreamFilter {
+//     #[serde(skip_serializing_if = "Option::is_none")]
+//     pub name: Option<String>,
+
+//     #[serde(flatten)]
+//     pub filter_spec: Option<StreamFilterSpec>,
+// }
+
+// rustfmt::skip
+// #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+// #[serde(untagged)]
+// pub enum StreamFilterSpec {
+//     StreamXpathFilter {
+//         #[serde(rename = "stream-xpath-filter")]
+//         #[serde(skip_serializing_if = "Option::is_none")]
+//         stream_xpath_filter: Option<String>,
+//     },
+//     StreamSubtreeFilter {
+//         #[serde(rename = "stream-subtree-filter")]
+//         #[serde(skip_serializing_if = "Option::is_none")]
+//         stream_subtree_filter: Option<Value>,
+//     },
+// }
 
 #[derive(Default, Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "kebab-case")]
@@ -268,6 +289,8 @@ pub enum LabelValue {
 
 #[cfg(test)]
 mod tests {
+    use std::vec;
+
     use super::*;
     use chrono::{TimeZone, Utc};
     use serde_json;
@@ -303,15 +326,32 @@ mod tests {
                     id: Some(1),
                     filters: YangPushFilters {
                         stream_filter: vec![
-                            StreamFilter::ByReference {
-                                stream_filter_name: "example-stream".to_string(),
+                            StreamFilter {
+                                name: "example-stream-subtree-filter".to_string(),
+                                stream_xpath_filter: None,
+                                stream_subtree_filter: Some(serde_json::json!({
+                                    "example": "filter"
+                                })),
                             },
-                            StreamFilter::WithinSubscription {
-                                filter_spec: Some(StreamFilterSpec::StreamSubtreeFilter {
-                                    stream_subtree_filter: Some(serde_json::json!({
-                                        "filter": "example-subtree-filter"
-                                    })),
-                                }),
+                            StreamFilter {
+                                name: "example-stream-xpath-filter".to_string(),
+                                stream_xpath_filter: Some("/example/xpath".to_string()),
+                                stream_subtree_filter: None,
+                            },
+                            StreamFilter {
+                                name: "example-stream-subtree-filter-vec".to_string(),
+                                stream_xpath_filter: None,
+                                stream_subtree_filter: Some(serde_json::json!({
+                                    "example-vec": vec![
+                                        serde_json::json!({"e1": "v1"}),
+                                        serde_json::json!({"e2": "v2"}),
+                                    ]
+                                })),
+                            },
+                            StreamFilter {
+                                name: "example-stream-xpath-filter-null".to_string(),
+                                stream_xpath_filter: None,
+                                stream_subtree_filter: None,
                             },
                         ],
                         extra_filters: serde_json::json!({}),
@@ -350,8 +390,11 @@ mod tests {
         // Serialize the TelemetryMessage to JSON
         let serialized = serde_json::to_string(&original_message).expect("Failed to serialize");
 
+        // Print the serialized JSON string
+        println!("Serialized JSON: {}", serialized);
+
         // Expected JSON string
-        let expected_json = r#"{"timestamp":"1970-01-01T00:00:00Z","notification-protocol":"yp-configured","notification-encoding":"json","notification-transport":"udp-notif","network-node-manifest":{"name":"node_id","vendor":"FRR"},"data-collection-manifest":{"name":"dev-collector","vendor":"NetGauze","vendor-pen":12345,"software-version":"1.0.0","software-flavor":"release","os-version":"8.10","os-type":"Rocky Linux"},"telemetry-notification-metadata":{"yang-push-subscription":{"id":1,"filters":{"stream-filter":[{"stream-filter-name":"example-stream"},{"stream-subtree-filter":{"filter":"example-subtree-filter"}}]},"module-version":[{"module-name":"example-module","revision":"2025-01-01","revision-label":"1.0.0"}],"yang-library-content-id":"random-content-id"}},"data-collection-metadata":{"remote-address":"127.0.0.1","remote-port":8080,"labels":[{"name":"platform_id","string-values":"IETF LAB"},{"name":"test_anykey_label","anydata-values":{"key":"value"}}]}}"#;
+        let expected_json = r#"{"timestamp":"1970-01-01T00:00:00Z","notification-protocol":"yp-configured","notification-encoding":"json","notification-transport":"udp-notif","network-node-manifest":{"name":"node_id","vendor":"FRR"},"data-collection-manifest":{"name":"dev-collector","vendor":"NetGauze","vendor-pen":12345,"software-version":"1.0.0","software-flavor":"release","os-version":"8.10","os-type":"Rocky Linux"},"telemetry-notification-metadata":{"yang-push-subscription":{"id":1,"filters":{"stream-filter":[{"name":"example-stream-subtree-filter","stream-subtree-filter":{"example":"filter"}},{"name":"example-stream-xpath-filter","stream-xpath-filter":"/example/xpath"},{"name":"example-stream-subtree-filter-vec","stream-subtree-filter":{"example-vec":[{"e1":"v1"},{"e2":"v2"}]}},{"name":"example-stream-xpath-filter-null"}]},"module-version":[{"module-name":"example-module","revision":"2025-01-01","revision-label":"1.0.0"}],"yang-library-content-id":"random-content-id"}},"data-collection-metadata":{"remote-address":"127.0.0.1","remote-port":8080,"labels":[{"name":"platform_id","string-values":"IETF LAB"},{"name":"test_anykey_label","anydata-values":{"key":"value"}}]}}"#;
 
         // Assert that the serialized JSON string matches the expected JSON string
         assert_eq!(
@@ -362,6 +405,10 @@ mod tests {
         // Deserialize the JSON string back to a TelemetryMessage
         let deserialized: TelemetryMessage =
             serde_json::from_str(&serialized).expect("Failed to deserialize");
+
+        // Serialize again to check if it matches the previous serialization
+        let re_serialized = serde_json::to_string(&deserialized).expect("Re-serialization failed");
+        println!("Re-serialized JSON: {}", re_serialized);
 
         // Assert that the original and deserialized messages are equal
         assert_eq!(original_message, deserialized);

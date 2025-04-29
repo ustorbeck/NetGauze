@@ -114,29 +114,29 @@ impl SubscriptionStartedModified {
     pub fn id(&self) -> SubscriptionId {
         self.id
     }
-    pub fn encoding(&self) -> Option<&String> {
-        self.encoding.as_ref()
+    pub fn encoding(&self) -> Option<&str> {
+        self.encoding.as_deref()
     }
-    pub fn transport(&self) -> Option<&String> {
-        self.transport.as_ref()
+    pub fn transport(&self) -> Option<&str> {
+        self.transport.as_deref()
     }
     pub fn module_version(&self) -> Option<&Vec<YangPushModuleVersion>> {
         self.module_version.as_ref()
     }
-    pub fn content_id(&self) -> Option<&String> {
-        self.content_id.as_ref()
+    pub fn content_id(&self) -> Option<&str> {
+        self.content_id.as_deref()
     }
-    pub fn datastore(&self) -> Option<&String> {
-        self.datastore.as_ref()
+    pub fn datastore(&self) -> Option<&str> {
+        self.datastore.as_deref()
     }
-    pub fn datastore_xpath_filter(&self) -> Option<&String> {
-        self.datastore_xpath_filter.as_ref()
+    pub fn datastore_xpath_filter(&self) -> Option<&str> {
+        self.datastore_xpath_filter.as_deref()
     }
-    pub fn stream(&self) -> Option<&String> {
-        self.stream.as_ref()
+    pub fn stream(&self) -> Option<&str> {
+        self.stream.as_deref()
     }
-    pub fn stream_xpath_filter(&self) -> Option<&String> {
-        self.stream_xpath_filter.as_ref()
+    pub fn stream_xpath_filter(&self) -> Option<&str> {
+        self.stream_xpath_filter.as_deref()
     }
 }
 

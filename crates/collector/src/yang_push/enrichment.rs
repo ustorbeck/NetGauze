@@ -20,6 +20,7 @@
 
 // TODO: handle subscription terminated which triggers cache removal for the
 // subscription....
+// TODO: implement early return...
 
 use crate::{
     notification::{Notification, SubscriptionStartedModified, SubscriptionTerminated},
@@ -123,7 +124,8 @@ fn fetch_sysinfo_manifest() -> Manifest {
         vendor: Some("NetGauze".to_string()),
         vendor_pen: None,
         software_version: Some(env!("CARGO_PKG_VERSION").to_string()), /* TODO: working also for
-                                                                        * binary? */
+                                                                        * binary? --> check
+                                                                        * better way/static */
         software_flavor: Some({
             if cfg!(debug_assertions) {
                 "debug".to_string()
@@ -139,11 +141,13 @@ fn fetch_sysinfo_manifest() -> Manifest {
 struct YangPushEnrichmentActor {
     cmd_rx: mpsc::Receiver<YangPushEnrichmentActorCommand>,
     udp_notif_rx: async_channel::Receiver<Arc<(SocketAddr, UdpNotifPacket)>>,
-    enriched_tx: async_channel::Sender<Arc<TelemetryMessage>>,
+    enriched_tx: async_channel::Sender<TelemetryMessage>,
     labels: HashMap<IpAddr, (u32, HashMap<String, String>)>,
     default_labels: (u32, HashMap<String, String>),
-    subscriptions: HashMap<SocketAddr, SubscriptionsCache>,
-    manifest: Manifest,
+    subscriptions: HashMap<SocketAddr, SubscriptionsCache>, /* TODO: maybe do it only per ip
+                                                             * address (after reboot
+                                                             * subscription continued without */
+    manifest: Manifest, //       subscription started messages but from another src-port!)
     stats: YangPushEnrichmentStats,
 }
 
@@ -151,7 +155,7 @@ impl YangPushEnrichmentActor {
     fn new(
         cmd_rx: mpsc::Receiver<YangPushEnrichmentActorCommand>,
         udp_notif_rx: async_channel::Receiver<Arc<(SocketAddr, UdpNotifPacket)>>,
-        enriched_tx: async_channel::Sender<Arc<TelemetryMessage>>,
+        enriched_tx: async_channel::Sender<TelemetryMessage>,
         stats: YangPushEnrichmentStats,
     ) -> Self {
         let default_labels = (
@@ -184,24 +188,25 @@ impl YangPushEnrichmentActor {
             None => NotificationEncoding::Unknown,
         };
 
+        // TODO: should we revert the getter to output &String?
         let xpath_filter: Option<String> = sub
             .datastore_xpath_filter()
-            .cloned()
-            .or_else(|| sub.stream_xpath_filter().cloned());
+            .map(|f| f.to_string())
+            .or_else(|| sub.stream_xpath_filter().map(|f| f.to_string()));
 
         let subscription_metadata = SubscriptionMetadata {
             id: Some(sub.id()),
             filters: YangPushFilters {
-                stream_filter: vec![StreamFilter::WithinSubscription {
-                    filter_spec: Some(StreamFilterSpec::StreamXpathFilter {
-                        stream_xpath_filter: xpath_filter,
-                    }),
+                stream_filter: vec![StreamFilter {
+                    name: sub.datastore().unwrap_or_default().to_string(), // TODO: check
+                    stream_xpath_filter: xpath_filter,
+                    stream_subtree_filter: None,
                 }],
                 extra_filters: serde_json::json!({}),
             },
             module_version: sub.module_version().cloned().unwrap_or_default(), /* TODO: test here
                                                                                 * default... */
-            yang_library_content_id: sub.content_id().cloned(),
+            yang_library_content_id: sub.content_id().map(|id| id.to_string()),
         };
 
         let peer_subscriptions = self.subscriptions.entry(peer).or_insert_with(HashMap::new);
@@ -306,6 +311,7 @@ impl YangPushEnrichmentActor {
         // debug!("{}", serde_json::to_string(&message).unwrap().yellow());
 
         //TODO: add counters (here or in the functions? let's see...)
+        //TODO: move to udp-notif-pkt together with Notification definition...
         match message.notification() {
             NotificationVariant::SubscriptionStarted(sub_started) => {
                 debug!(
@@ -366,7 +372,7 @@ impl YangPushEnrichmentActor {
                 msg = self.udp_notif_rx.recv() => {
                     match msg {
                         Ok(arc_tuple) => {
-                            let (peer, udp_notif_pkt) = &*arc_tuple;
+                            let (peer, udp_notif_pkt) = arc_tuple.as_ref();
                             let peer_tags = [
                                 opentelemetry::KeyValue::new(
                                     "network.peer.address",
@@ -378,10 +384,6 @@ impl YangPushEnrichmentActor {
                                 ),
                             ];
                             self.stats.received_messages.add(1, &peer_tags);
-
-                            // TODO: investigate maybe calling the msg processing asynchronously
-                            //       to avoid blocking if processing one message takes too long...
-                            //       --> split payload decoding and notification processing ?
 
                             // Access the notification from the UdpNotifPacket
                             let payload: UdpNotifPayload;
@@ -413,7 +415,6 @@ impl YangPushEnrichmentActor {
                                       info!("{}", serde_json::to_string(&enriched).unwrap().purple());
 
                                       // Successfully processed and got a TelemetryMessage
-                                      let enriched = std::sync::Arc::new(enriched);
                                       if let Err(err) = self.enriched_tx.send(enriched).await {
                                           error!("YangPushEnrichmentActor send error: {err}");
                                           self.stats.send_error.add(1, &peer_tags);
@@ -463,7 +464,7 @@ impl std::error::Error for YangPushEnrichmentActorHandleError {}
 #[derive(Debug, Clone)]
 pub struct YangPushEnrichmentActorHandle {
     cmd_send: mpsc::Sender<YangPushEnrichmentActorCommand>,
-    enriched_rx: async_channel::Receiver<Arc<TelemetryMessage>>,
+    enriched_rx: async_channel::Receiver<TelemetryMessage>,
 }
 
 impl YangPushEnrichmentActorHandle {
@@ -494,7 +495,7 @@ impl YangPushEnrichmentActorHandle {
             .map_err(|_| YangPushEnrichmentActorHandleError::SendError)
     }
 
-    pub fn subscribe(&self) -> async_channel::Receiver<Arc<TelemetryMessage>> {
+    pub fn subscribe(&self) -> async_channel::Receiver<TelemetryMessage> {
         self.enriched_rx.clone()
     }
 }
