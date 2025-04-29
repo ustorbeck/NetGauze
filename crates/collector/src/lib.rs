@@ -21,6 +21,7 @@ use crate::{
         kafka_avro::KafkaAvroPublisherActorHandle,
         kafka_json::KafkaJsonPublisherActorHandle,
     },
+    telemetry::TelemetryMessage,
     yang_push::*,
 };
 use futures_util::{stream::FuturesUnordered, StreamExt};
@@ -289,16 +290,33 @@ pub async fn init_udp_notif_collection(
                         "Flow Kafka Avro publisher not supported for UDP Notif"
                     ));
                 }
-                PublisherEndpoint::TelemetryKafkaJson(_config) => {
+                PublisherEndpoint::TelemetryKafkaJson(config) => {
                     let (enrichment_join, enrichment_handle) = YangPushEnrichmentActorHandle::new(
                         publisher_config.buffer_size,
                         udp_notif_recv.clone(),
                         either::Left(meter.clone()),
                     );
                     join_set.push(enrichment_join);
-                    enrichment_handles.push(enrichment_handle);
+                    enrichment_handles.push(enrichment_handle.clone());
 
-                    // TODO: pass it to a KafkaJsonPublisherActorHandle
+                    let enriched_rx = enrichment_handle.subscribe();
+                    let hdl = KafkaJsonPublisherActorHandle::from_config(
+                        serialize_yang_push,
+                        config.clone(),
+                        enriched_rx,
+                        either::Left(meter.clone()),
+                    );
+                    match hdl {
+                        Ok((kafka_join, kafka_handle)) => {
+                            join_set.push(kafka_join);
+                            kafka_handles.push(kafka_handle);
+                        }
+                        Err(err) => {
+                            return Err(anyhow::anyhow!(
+                                "Error creating KafkaJsonPublisherActorHandle: {err}"
+                            ));
+                        }
+                    }
                 }
             }
         }
@@ -404,6 +422,17 @@ fn serialize_udp_notif(
         Some(serde_json::Value::String(peer.ip().to_string())),
         value,
     ))
+}
+
+fn serialize_yang_push(
+    input: TelemetryMessage,
+    _writer_id: String,
+) -> Result<(Option<serde_json::Value>, serde_json::Value), UdpNotifSerializationError> {
+    let datacoll = input.data_collection_metadata.clone();
+    let ip = datacoll.remote_address;
+    let value = serde_json::to_value(input)?;
+    let key = serde_json::Value::String(ip.to_string());
+    Ok((Some(key), value))
 }
 
 #[derive(Debug, strum_macros::Display)]
