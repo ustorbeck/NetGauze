@@ -3153,6 +3153,7 @@ dependencies = [
  "netgauze-udp-notif-service",
  "opentelemetry",
  "quick-xml",
+ "rand 0.10.1",
  "russh",
  "rustc-hash",
  "serde",
